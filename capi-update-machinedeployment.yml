@@ -65,6 +65,12 @@
     - name: Apply updated templates
       command: kubectl apply --kubeconfig {{ kubeconfig_path }} -f updated/updated_machinedeployment_{{ item }}.yaml
       loop: "{{ template_names }}"
+      when: not dry_run
+
+    - name: Dry run mode enabled - skipping apply
+      debug:
+        msg: "Dry run enabled, skipping kubectl apply"
+      when: dry_run
 
     # - name: Wait for MachineDeployment rollout to complete
     #   shell: |

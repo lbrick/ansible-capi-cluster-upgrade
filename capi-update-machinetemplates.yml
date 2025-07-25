@@ -4,6 +4,7 @@
   vars:
     capi_image_name: "rocky-9-containerd-{{ kubernetes_version }}"
     version_suffix: "{{ kubernetes_version | replace('.', '') }}"
+    dry_run: true
   tasks:
     - name: Assert required variables are set
       assert:
@@ -46,12 +47,16 @@
 
     - name: Decode, update YAML, and save in a variable
       set_fact:
-         updated_yaml_list: "{{ updated_yaml_list | default([]) + [ { 'name': item.item, 'yaml': updated_yaml } ] }}"
+        updated_yaml_list: "{{ updated_yaml_list | default([]) + [ { 'name': item.item, 'yaml': updated_yaml } ] }}"
       vars:
         updated_yaml: >-
           {{
             (item.content | b64decode | from_yaml)
-            | combine({'metadata': {'name': item.item + '-' + version_suffix}}, recursive=True)
+            | combine({
+                'metadata': {
+                  'name': ((item.item | regex_replace('-v[0-9]+$', '')) + '-' + version_suffix)
+                }
+              }, recursive=True)
             | combine({'spec': {'template': {'spec': {'image': {'filter': {'name': capi_image_name}}}}}}, recursive=True)
           }}
       loop: "{{ slurped_yaml.results }}"
@@ -65,3 +70,9 @@
     - name: Apply updated templates
       command: kubectl apply --kubeconfig {{ kubeconfig_path }} -f updated/updated_machinetemplate_{{ item }}.yaml
       loop: "{{ template_names }}"
+      when: not dry_run
+
+    - name: Dry run mode enabled - skipping apply
+      debug:
+        msg: "Dry run enabled, skipping kubectl apply"
+      when: dry_run

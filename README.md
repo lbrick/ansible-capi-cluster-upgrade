@@ -48,3 +48,8 @@ Here is an easy code/pasta of the variables to change/update with the include li
   -e cluster_name=CLUSTER_TO_UPGRADE \
   -e kubernetes_version=KUBERNETES_VERSION_TO_UPGRADE_TOO
 ```
+
+By default we have a setting called `dry_run` and this is set to true by default setting this to false will run the apply for the config files
+```
+-e dry_run=false
+```
