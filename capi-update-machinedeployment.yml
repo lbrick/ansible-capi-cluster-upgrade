@@ -1,0 +1,91 @@
+---
+- name: Get Latest MachineDeployment
+  hosts: localhost
+  vars:
+    capi_image_name: "rocky-9-containerd-{{ kubernetes_version }}"
+    version_suffix: "{{ kubernetes_version | replace('.', '') }}"
+  tasks:
+    - name: Assert required variables are set
+      assert:
+        that:
+          - kubeconfig_path is defined
+          - cluster_name is defined
+          - kubernetes_version is defined
+        fail_msg: "You must provide kubeconfig_path, cluster_name, and kubernetes_version as extra_vars"
+
+    - name: Get MachineDeployments
+      shell: >-
+        kubectl --kubeconfig {{ kubeconfig_path }} get machinedeployment
+      register: kubeadm_controlplane
+
+    - name: Extract template names matching cluster name
+      set_fact:
+        matching_templates: >-
+          {{ kubeadm_controlplane.stdout_lines[1:] | select("search", cluster_name) | list }}
+
+    - name: Extract just the names
+      set_fact:
+        template_names: >-
+          {{ matching_templates | map('regex_replace', '\s+.*$', '') | list }}
+
+    - name: Dump each MachineDeployments to a YAML file
+      shell: >
+        kubectl --kubeconfig {{ kubeconfig_path }}
+        get machinedeployment {{ item }} -o yaml > orig/orig_machinedeployment_{{ item }}.yaml
+      loop: "{{ template_names }}"
+
+    - name: Show matching templates
+      debug:
+        var: template_names
+
+    - name: Slurp original YAML files into memory
+      slurp:
+        src: "orig/orig_machinedeployment_{{ item }}.yaml"
+      register: slurped_yaml
+      loop: "{{ template_names }}"
+
+    - name: Decode, update YAML, and save in a variable
+      set_fact:
+         updated_yaml_list: "{{ updated_yaml_list | default([]) + [ { 'name': item.item, 'yaml': updated_yaml } ] }}"
+      vars:
+        updated_yaml: >-
+          {{
+            (item.content | b64decode | from_yaml)
+            | combine({'spec': {'template': {'spec': {'infrastructureRef': {'name': item.item + '-' + version_suffix}}}}}, recursive=True)
+            | combine({'spec': {'template': {'spec': {'version': kubernetes_version}}}}, recursive=True)
+          }}
+      loop: "{{ slurped_yaml.results }}"
+
+    - name: Write updated YAML files to disk
+      copy:
+        content: "{{ item.yaml | to_nice_yaml }}"
+        dest: "updated/updated_machinedeployment_{{ item.name }}.yaml"
+      loop: "{{ updated_yaml_list }}"
+
+    - name: Apply updated templates
+      command: kubectl apply --kubeconfig {{ kubeconfig_path }} -f updated/updated_machinedeployment_{{ item }}.yaml
+      loop: "{{ template_names }}"
+
+    # - name: Wait for MachineDeployment rollout to complete
+    #   shell: |
+    #     kubectl --kubeconfig {{ kubeconfig_path }} get machinedeployment {{ item }} -o json
+    #   register: md_status
+    #   until: >
+    #     (md_status.stdout | from_json).status.observedGeneration == 
+    #     (md_status.stdout | from_json).metadata.generation and
+    #     (md_status.stdout | from_json).status.readyReplicas == 
+    #     (md_status.stdout | from_json).status.replicas
+    #   retries: 60
+    #   delay: 15
+    #   loop: "{{ template_names }}"
+
+    # - name: Ensure all nodes are Ready
+    #   shell: |
+    #     kubectl --kubeconfig {{ kubeconfig_path }} get nodes -o json
+    #   register: node_status
+    #   until: >
+    #     (node_status.stdout | from_json).items | selectattr("status.conditions", "select",
+    #       lambda conds: conds | selectattr("type", "equalto", "Ready") | selectattr("status", "equalto", "True") | list | length > 0
+    #     ) | list | length == (node_status.stdout | from_json).items | length
+    #   retries: 20
+    #   delay: 15

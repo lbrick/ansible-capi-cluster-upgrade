@@ -1,0 +1,67 @@
+---
+- name: Get Latest OpenStackMachineTemplates
+  hosts: localhost
+  vars:
+    capi_image_name: "rocky-9-containerd-{{ kubernetes_version }}"
+    version_suffix: "{{ kubernetes_version | replace('.', '') }}"
+  tasks:
+    - name: Assert required variables are set
+      assert:
+        that:
+          - kubeconfig_path is defined
+          - cluster_name is defined
+          - kubernetes_version is defined
+        fail_msg: "You must provide kubeconfig_path, cluster_name, and kubernetes_version as extra_vars"
+
+    - name: Get MachineTemplates
+      shell: >-
+        kubectl --kubeconfig {{ kubeconfig_path }} get openstackmachinetemplate
+      register: openstack_machine_templates
+
+    - name: Extract template names matching cluster name
+      set_fact:
+        matching_templates: >-
+          {{ openstack_machine_templates.stdout_lines[1:] | select("search", cluster_name) | list }}
+
+    - name: Extract just the names
+      set_fact:
+        template_names: >-
+          {{ matching_templates | map('regex_replace', '\s+.*$', '') | list }}
+
+    - name: Dump each OpenStackMachineTemplate to a YAML file
+      shell: >
+        kubectl --kubeconfig {{ kubeconfig_path }}
+        get OpenStackMachineTemplate {{ item }} -o yaml > orig/orig_machinetemplate_{{ item }}.yaml
+      loop: "{{ template_names }}"
+
+    - name: Show matching templates
+      debug:
+        var: template_names
+
+    - name: Slurp original YAML files into memory
+      slurp:
+        src: "orig/orig_machinetemplate_{{ item }}.yaml"
+      register: slurped_yaml
+      loop: "{{ template_names }}"
+
+    - name: Decode, update YAML, and save in a variable
+      set_fact:
+         updated_yaml_list: "{{ updated_yaml_list | default([]) + [ { 'name': item.item, 'yaml': updated_yaml } ] }}"
+      vars:
+        updated_yaml: >-
+          {{
+            (item.content | b64decode | from_yaml)
+            | combine({'metadata': {'name': item.item + '-' + version_suffix}}, recursive=True)
+            | combine({'spec': {'template': {'spec': {'image': {'filter': {'name': capi_image_name}}}}}}, recursive=True)
+          }}
+      loop: "{{ slurped_yaml.results }}"
+
+    - name: Write updated YAML files to disk
+      copy:
+        content: "{{ item.yaml | to_nice_yaml }}"
+        dest: "updated/updated_machinetemplate_{{ item.name }}.yaml"
+      loop: "{{ updated_yaml_list }}"
+
+    - name: Apply updated templates
+      command: kubectl apply --kubeconfig {{ kubeconfig_path }} -f updated/updated_machinetemplate_{{ item }}.yaml
+      loop: "{{ template_names }}"

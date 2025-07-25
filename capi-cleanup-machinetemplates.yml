@@ -1,0 +1,36 @@
+---
+- name: Delete N oldest OpenStackMachineTemplates for a cluster
+  hosts: localhost
+  vars:
+    templates_to_keep: 2
+  tasks:
+    - name: Get all OpenStackMachineTemplates as JSON
+      shell: >-
+        kubectl --kubeconfig {{ kubeconfig_path }} get openstackmachinetemplate -o json
+      register: templates_json
+
+    - name: Filter and sort templates by creationTimestamp
+      set_fact:
+        sorted_templates: >-
+          {{
+            templates_json.stdout
+            | from_json
+            | json_query("items[?contains(metadata.name, `" ~ cluster_name ~ "`)]")
+            | sort(attribute='metadata.creationTimestamp')
+            | map(attribute='metadata.name')
+            | list
+          }}
+
+    - name: Set templates to delete (all but newest N)
+      set_fact:
+        templates_to_delete: "{{ sorted_templates[:-templates_to_keep] if sorted_templates|length > templates_to_keep else [] }}"
+
+    - name: Show templates that will be deleted
+      debug:
+        var: templates_to_delete
+
+    - name: Delete old templates
+      shell: >-
+        kubectl --kubeconfig {{ kubeconfig_path }} delete openstackmachinetemplate {{ item }}
+      loop: "{{ templates_to_delete }}"
+      when: templates_to_delete | length > 0
