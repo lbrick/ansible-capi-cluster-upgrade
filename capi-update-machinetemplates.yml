@@ -4,7 +4,6 @@
   vars:
     capi_image_name: "rocky-9-containerd-{{ kubernetes_version }}"
     version_suffix: "{{ kubernetes_version | replace('.', '') }}"
-    dry_run: true
   tasks:
     - name: Assert required variables are set
       assert:
@@ -13,6 +12,14 @@
           - cluster_name is defined
           - kubernetes_version is defined
         fail_msg: "You must provide kubeconfig_path, cluster_name, and kubernetes_version as extra_vars"
+
+    - name: Ensure dry_run has a default
+      set_fact:
+        dry_run: "{{ dry_run | default(true) }}"
+
+    - name: Show dry run status
+      debug:
+        msg: "Dry run is {{ dry_run | bool }}"
 
     - name: Get MachineTemplates
       shell: >-
@@ -67,12 +74,12 @@
         dest: "updated/updated_machinetemplate_{{ item.name }}.yaml"
       loop: "{{ updated_yaml_list }}"
 
+    - name: Dry run mode enabled
+      debug:
+        msg: "Dry run enabled, skipping kubectl apply"
+      when: dry_run | bool
+
     - name: Apply updated templates
       command: kubectl apply --kubeconfig {{ kubeconfig_path }} -f updated/updated_machinetemplate_{{ item }}.yaml
       loop: "{{ template_names }}"
-      when: not dry_run
-
-    - name: Dry run mode enabled - skipping apply
-      debug:
-        msg: "Dry run enabled, skipping kubectl apply"
-      when: dry_run
+      when: not dry_run | bool

@@ -53,3 +53,11 @@ By default we have a setting called `dry_run` and this is set to true by default
 ```
 -e dry_run=false
 ```
+
+## Requirements
+
+You will need to run this to add `jmespath` to the pipx venv for ansible
+
+```
+pipx inject ansible-core jmespath
+```
