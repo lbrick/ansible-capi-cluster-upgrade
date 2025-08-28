@@ -52,21 +52,58 @@
       register: slurped_yaml
       loop: "{{ template_names }}"
 
+    - name: Debug split version parsing
+      debug:
+        msg:
+          - "Original: {{ kubernetes_version }}"
+          - "Cleaned: {{ kubernetes_version_clean }}"
+          - "Version parts: {{ version_parts }}"
+          - "Major.minor: {{ major_minor }}"
+      vars:
+        kubernetes_version_clean: "{{ kubernetes_version | regex_replace('^v', '') }}"
+        version_parts: "{{ kubernetes_version_clean.split('.') }}"
+        major_minor: "{{ (version_parts[0] + '.' + version_parts[1]) | float }}"
+
     - name: Decode, update YAML, and save in a variable
       set_fact:
-         updated_yaml_list: "{{ updated_yaml_list | default([]) + [ { 'name': item.item, 'yaml': updated_yaml } ] }}"
+        updated_yaml_list: "{{ updated_yaml_list | default([]) + [ { 'name': item.item, 'yaml': updated_yaml } ] }}"
       vars:
+        # Extract major.minor version using split - SIMPLER AND MORE RELIABLE
+        kubernetes_version_clean: "{{ kubernetes_version | regex_replace('^v', '') }}"
+        version_parts: "{{ kubernetes_version_clean.split('.') }}"
+        major_minor: "{{ (version_parts[0] + '.' + version_parts[1]) | float }}"
+        
+        decoded_yaml: "{{ item.content | b64decode | from_yaml }}"
+        
+        base_updates:
+          spec:
+            machineTemplate:
+              infrastructureRef:
+                name: "{{ item.item }}-{{ version_suffix }}"
+            version: "{{ kubernetes_version }}"
+        
+        # First combine the base updates
+        combined_yaml: "{{ decoded_yaml | combine(base_updates, recursive=true) }}"
+        
+        # Conditionally remove cloud-provider using a proper approach
         updated_yaml: >-
-          {{
-            (item.content | b64decode | from_yaml)
-            | combine({'spec': {'machineTemplate': {'infrastructureRef': {'name': item.item + '-' + version_suffix}}}}, recursive=True)
-            | combine({'spec': {'version': kubernetes_version}}, recursive=True)
-          }}
+          {% set y = combined_yaml %}
+          {% if major_minor | float >= 1.33 %}
+            {% if y.spec is defined 
+                  and y.spec.kubeadmConfigSpec is defined 
+                  and y.spec.kubeadmConfigSpec.clusterConfiguration is defined 
+                  and y.spec.kubeadmConfigSpec.clusterConfiguration.apiServer is defined 
+                  and y.spec.kubeadmConfigSpec.clusterConfiguration.apiServer.extraArgs is defined 
+                  and 'cloud-provider' in y.spec.kubeadmConfigSpec.clusterConfiguration.apiServer.extraArgs %}
+              {% set _ = y.spec.kubeadmConfigSpec.clusterConfiguration.apiServer.extraArgs.pop('cloud-provider') %}
+            {% endif %}
+          {% endif %}
+          {{ y | to_nice_yaml }}
       loop: "{{ slurped_yaml.results }}"
 
     - name: Write updated YAML files to disk
       copy:
-        content: "{{ item.yaml | to_nice_yaml }}"
+        content: "{{ item.yaml | trim }}"
         dest: "updated/updated_kubeadmcontrolplane_{{ item.name }}.yaml"
       loop: "{{ updated_yaml_list }}"
 
